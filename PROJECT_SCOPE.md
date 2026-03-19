@@ -2,7 +2,7 @@
 
 > **Project Codename:** PolyglotSwarm  
 > **Inspired by:** [Overstory](https://github.com/jayminwest/overstory)  
-> **Goal:** A provider-agnostic multi-agent orchestration TUI with first-class support for Mistral (via `mistral-vibe-cli`), Hermes agents, OpenClaw, and any other CLI-based agent runtime.
+> **Goal:** A provider-agnostic multi-agent orchestration TUI with first-class support for Mistral (via `vibe`), Hermes agents, OpenClaw, and any other CLI-based agent runtime.
 
 ---
 
@@ -10,7 +10,7 @@
 
 Overstory is a solid multi-agent orchestration framework, but it is tightly coupled to Claude Code and its ecosystem. Key gaps that PolyglotSwarm addresses:
 
-- No support for **Mistral Vibe CLI** (`mistral-vibe` or `mvibe`)
+- No support for **Mistral Vibe CLI** (`vibe`)
 - No support for **Hermes-based agents** (e.g., Nous Hermes via Ollama or llama.cpp)
 - No support for **OpenClaw** or other privacy-first/self-hosted agent runtimes
 - Dashboard/TUI is tmux-based with limited UI polish
@@ -105,9 +105,9 @@ polyglot-swarm/
       watchdog.py              # Stall detection + auto-nudge
     runtimes/
       base.py                  # AgentRuntime abstract base class
-      mistral.py               # Mistral Vibe CLI adapter
+      mistral.py               # Mistral Vibe CLI adapter  (binary: vibe)
       hermes.py                # Hermes (Ollama/llama.cpp) adapter
-      openclaw.py              # OpenClaw adapter
+      openclaw.py              # OpenClaw adapter          (binary: openclaw)
       claude.py                # Claude Code adapter (optional compat)
       gemini.py                # Gemini CLI adapter (optional compat)
     messaging/
@@ -135,7 +135,7 @@ The most important architectural decision is the **runtime adapter interface**. 
 ```python
 # src/runtimes/base.py
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 @dataclass
@@ -144,8 +144,8 @@ class AgentConfig:
     role: str          # builder, scout, reviewer, etc.
     task: str
     worktree_path: str
-    model: str         # e.g. "mistral-large", "hermes-3", "openclaw-base"
-    extra_env: dict[str, str] = None
+    model: str         # e.g. "mistral-large-latest", "hermes-3", "openclaw-base"
+    extra_env: dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class AgentStatus:
@@ -192,47 +192,251 @@ class AgentRuntime(ABC):
 
 ---
 
-## 7. Mistral Vibe CLI Adapter Pattern
+## 7. Mistral Vibe CLI Adapter
+
+> **Binary:** `vibe`  
+> **Programmatic mode flag:** `-p` / `--prompt` — sends prompt, auto-approves all tools, outputs response, then exits.  
+> **Key flags confirmed from `vibe --help`:**
+
+| Flag | Purpose |
+|------|---------|
+| `-p TEXT` / `--prompt TEXT` | Programmatic (headless) mode. Runs non-interactively, auto-approves tools. |
+| `--max-turns N` | Limit assistant turns (programmatic mode only) |
+| `--max-price DOLLARS` | Cost cap before interrupt (programmatic mode only) |
+| `--enabled-tools TOOL` | Allowlist specific tools; disables all others in `-p` mode. Supports glob + regex. |
+| `--output {text,json,streaming}` | Output format. Use `streaming` for live NDJSON per message. |
+| `--agent NAME` | Use a custom agent from `~/.vibe/agents/NAME.toml` or builtins: `default`, `plan`, `accept-edits`, `auto-approve` |
+| `--workdir DIR` | Change to this directory before running |
+| `--resume SESSION_ID` | Resume a specific session (supports partial match) |
+| `-c` / `--continue` | Continue from most recent session |
+
+### Spawn Strategy
+
+Use `-p` (programmatic mode) with `--output streaming` for non-interactive agent runs. The streaming NDJSON output lets you read each message as it arrives without waiting for the agent to finish. For multi-turn agents that need to stay alive and receive nudges, use `--resume SESSION_ID` to re-enter a session.
 
 ```python
 # src/runtimes/mistral.py
-import asyncio
+import asyncio, os, json
+from pathlib import Path
 from .base import AgentRuntime, AgentConfig, AgentStatus
 
 class MistralVibeRuntime(AgentRuntime):
     runtime_name = "mistral-vibe"
 
+    def __init__(self):
+        self._sessions: dict[str, asyncio.subprocess.Process] = {}
+        self._session_ids: dict[str, str] = {}  # session_id -> vibe SESSION_ID for resume
+
     async def spawn(self, config: AgentConfig) -> str:
-        # Spawn mistral-vibe in a new tmux window or subprocess
+        system_prompt = self._load_system_prompt(config.role)
+        # Write system prompt into a custom agent toml if needed, or prepend to prompt
+        initial_prompt = f"{system_prompt}\n\nYour task:\n{config.task}"
+
         cmd = [
-            "mistral-vibe",           # or 'mvibe' depending on install
-            "--model", config.model,
-            "--system", self._load_system_prompt(config.role),
+            "vibe",
+            "-p", initial_prompt,
+            "--output", "streaming",        # NDJSON stream per message
+            "--max-turns", "50",
             "--workdir", config.worktree_path,
-            "--non-interactive",      # headless mode flag (confirm with mistral-vibe docs)
+            "--agent", "auto-approve",       # auto-approve all tool calls
         ]
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=config.worktree_path,
-            env={**os.environ, **(config.extra_env or {})}
+            env={**os.environ, **(config.extra_env or {})},
         )
-        session_id = f"mistral-{config.name}-{proc.pid}"
+        session_id = f"vibe-{config.name}-{proc.pid}"
         self._sessions[session_id] = proc
         return session_id
 
-    def _load_system_prompt(self, role: str) -> str:
-        prompt_path = Path(f"agents/definitions/{role}.md")
-        return prompt_path.read_text() if prompt_path.exists() else ""
-```
+    async def send_message(self, session_id: str, message: str) -> None:
+        # For nudges: resume the last session with a new -p prompt
+        vibe_session = self._session_ids.get(session_id)
+        cmd = ["vibe", "-p", message, "--output", "streaming"]
+        if vibe_session:
+            cmd += ["--resume", vibe_session]
+        proc = await asyncio.create_subprocess_exec(*cmd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        self._sessions[session_id] = proc
 
-> **Note:** The exact flags for `mistral-vibe` (headless/non-interactive mode) need to be confirmed against the actual CLI's `--help`. Adapt the `spawn()` method accordingly.
+    async def stream_output(self, session_id: str):
+        proc = self._sessions.get(session_id)
+        if not proc or not proc.stdout:
+            return
+        async for line in proc.stdout:
+            decoded = line.decode().strip()
+            if decoded:
+                try:
+                    msg = json.loads(decoded)  # NDJSON streaming
+                    yield msg.get("content", decoded)
+                except json.JSONDecodeError:
+                    yield decoded
+
+    async def kill(self, session_id: str) -> None:
+        proc = self._sessions.pop(session_id, None)
+        if proc:
+            proc.terminate()
+            await proc.wait()
+
+    async def get_status(self, session_id: str) -> AgentStatus:
+        proc = self._sessions.get(session_id)
+        if not proc:
+            state = "error"
+        elif proc.returncode is None:
+            state = "running"
+        elif proc.returncode == 0:
+            state = "done"
+        else:
+            state = "error"
+        return AgentStatus(
+            name=session_id, state=state,
+            current_task="", last_output="", pid=proc.pid if proc else None
+        )
+
+    def _load_system_prompt(self, role: str) -> str:
+        p = Path(f"agents/definitions/{role}.md")
+        return p.read_text() if p.exists() else ""
+```
 
 ---
 
-## 8. Overseer Loop (Core Logic)
+## 8. OpenClaw Adapter
+
+> **Binary:** `openclaw`  
+> **OpenClaw is a WhatsApp/Telegram automation gateway with a built-in agent system**, not a general-purpose coding agent. Its agent interface is accessed via the running Gateway.
+> **Key commands confirmed from `openclaw --help`:**
+
+| Command/Flag | Purpose |
+|--------------|--------|
+| `openclaw agent` | Run **one agent turn** via the Gateway |
+| `openclaw agents *` | Manage isolated agent workspaces, auth, routing |
+| `openclaw gateway *` | Start/stop/query the WebSocket Gateway (agents run through this) |
+| `openclaw tui` | Open a terminal UI connected to the Gateway |
+| `openclaw acp *` | Agent Control Protocol tools |
+| `openclaw sandbox *` | Manage sandbox containers for agent isolation |
+| `openclaw sessions *` | List stored conversation sessions |
+| `--profile <name>` | Isolate state under `~/.openclaw-<name>` (critical for multi-agent) |
+| `--dev` | Dev profile: isolated state, shifts ports (gateway port 19001) |
+
+### Key Insight: Multi-Agent with OpenClaw
+
+OpenClaw was designed for a **single gateway with isolated agents via `--profile`**. Each sub-agent in PolyglotSwarm maps to its own OpenClaw profile (isolated workspace). Communication between agents goes through PolyglotSwarm's SQLite bus, NOT through WhatsApp/Telegram channels.
+
+```python
+# src/runtimes/openclaw.py
+import asyncio, os
+from .base import AgentRuntime, AgentConfig, AgentStatus
+
+class OpenClawRuntime(AgentRuntime):
+    runtime_name = "openclaw"
+
+    def __init__(self):
+        self._sessions: dict[str, asyncio.subprocess.Process] = {}
+        self._profiles: dict[str, str] = {}  # session_id -> profile name
+
+    async def spawn(self, config: AgentConfig) -> str:
+        profile = f"swarm-{config.name}"  # isolated profile per agent
+        self._profiles[f"openclaw-{config.name}"] = profile
+
+        # First ensure the gateway is running for this profile
+        # openclaw --profile <name> gateway --background
+        gw_cmd = [
+            "openclaw",
+            "--profile", profile,
+            "gateway", "--background",   # start gateway in background
+        ]
+        gw_proc = await asyncio.create_subprocess_exec(
+            *gw_cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await gw_proc.wait()
+        await asyncio.sleep(2)  # allow gateway to initialize
+
+        # Now run one agent turn with the initial task
+        cmd = [
+            "openclaw",
+            "--profile", profile,
+            "agent",
+            "--message", config.task,
+            "--deliver",                 # deliver response back
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, **(config.extra_env or {})},
+        )
+        session_id = f"openclaw-{config.name}-{proc.pid}"
+        self._sessions[session_id] = proc
+        return session_id
+
+    async def send_message(self, session_id: str, message: str) -> None:
+        # Nudge: run another agent turn against the same profile
+        name = session_id.split("-")[1]  # extract agent name
+        profile = self._profiles.get(f"openclaw-{name}")
+        if not profile:
+            return
+        cmd = ["openclaw", "--profile", profile, "agent", "--message", message, "--deliver"]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._sessions[session_id] = proc
+
+    async def stream_output(self, session_id: str):
+        proc = self._sessions.get(session_id)
+        if not proc or not proc.stdout:
+            return
+        async for line in proc.stdout:
+            decoded = line.decode().strip()
+            if decoded:
+                yield decoded
+
+    async def kill(self, session_id: str) -> None:
+        name = session_id.split("-")[1]
+        profile = self._profiles.get(f"openclaw-{name}")
+        proc = self._sessions.pop(session_id, None)
+        if proc:
+            proc.terminate()
+            await proc.wait()
+        # Stop gateway for this profile
+        if profile:
+            stop_cmd = ["openclaw", "--profile", profile, "gateway", "stop"]
+            stop = await asyncio.create_subprocess_exec(*stop_cmd,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            await stop.wait()
+
+    async def get_status(self, session_id: str) -> AgentStatus:
+        proc = self._sessions.get(session_id)
+        if not proc:
+            state = "error"
+        elif proc.returncode is None:
+            state = "running"
+        elif proc.returncode == 0:
+            state = "done"
+        else:
+            state = "error"
+        return AgentStatus(
+            name=session_id, state=state,
+            current_task="", last_output="", pid=proc.pid if proc else None
+        )
+
+    @property
+    def runtime_name(self) -> str:
+        return "openclaw"
+```
+
+> **⚠️ OpenClaw Note:** OpenClaw's primary design is WhatsApp/Telegram automation. Using it as a coding agent runtime means you're driving it through its `agent` single-turn command or its ACP (Agent Control Protocol). Check `openclaw acp --help` and `openclaw agents --help` for richer multi-turn agent workspace management that may be better suited for persistent sub-agents.
+
+---
+
+## 9. Overseer Loop (Core Logic)
 
 The Overseer is not just a model — it's a **control loop**:
 
@@ -267,7 +471,7 @@ async def overseer_loop(
 
 ---
 
-## 9. TUI Layout Best Practices (Textual)
+## 10. TUI Layout Best Practices (Textual)
 
 ```python
 # src/tui/app.py
@@ -296,7 +500,7 @@ Textual supports **reactive data binding** — agent status updates push to the 
 
 ---
 
-## 10. Config File Design
+## 11. Config File Design
 
 ```yaml
 # config.yaml
@@ -306,21 +510,24 @@ overseer:
   system_prompt: agents/definitions/overseer.md
 
 agents:
-  default_runtime: hermes       # fallback for spawned agents
+  default_runtime: mistral-vibe
   max_concurrent: 5
-  stall_timeout_seconds: 120    # trigger nudge after this many seconds of no output
+  stall_timeout_seconds: 120    # trigger nudge after N seconds of no output
 
 runtimes:
   mistral-vibe:
-    binary: mistral-vibe        # or absolute path
-    extra_flags: []
+    binary: vibe                # confirmed binary name
+    programmatic_flag: "-p"     # headless mode flag
+    output_format: streaming    # NDJSON per message
+    default_agent: auto-approve # builtin agent profile
   hermes:
     binary: ollama
     model: nous-hermes-3
     extra_flags: ["run"]
   openclaw:
     binary: openclaw
-    extra_flags: ["--headless"]
+    profile_prefix: swarm-      # isolate each agent under swarm-<name> profile
+    gateway_background: true
   claude:
     binary: claude
     extra_flags: []
@@ -334,12 +541,12 @@ worktree:
 
 ---
 
-## 11. Milestone Roadmap
+## 12. Milestone Roadmap
 
 ### Phase 1 — Foundation
 - [ ] Project scaffolding (pyproject.toml, Typer CLI, config loader)
 - [ ] `AgentRuntime` abstract base class
-- [ ] Hermes/Ollama runtime adapter (easiest to test locally)
+- [ ] Hermes/Ollama runtime adapter (easiest to test locally offline)
 - [ ] SQLite message bus (`aiosqlite`, WAL mode)
 - [ ] Git worktree manager
 
@@ -347,8 +554,8 @@ worktree:
 - [ ] `AgentManager` — spawn, track, kill agents
 - [ ] `Watchdog` — stall detection (no output > N seconds)
 - [ ] Overseer control loop (decompose → dispatch → monitor → nudge)
-- [ ] Mistral Vibe CLI adapter
-- [ ] OpenClaw adapter
+- [ ] Mistral Vibe CLI adapter (`vibe -p`, streaming NDJSON output)
+- [ ] OpenClaw adapter (profile-isolated, `openclaw agent` single-turn + ACP)
 
 ### Phase 3 — TUI
 - [ ] Textual app skeleton (split panels)
@@ -359,43 +566,45 @@ worktree:
 
 ### Phase 4 — Polish
 - [ ] `swarm init` command
-- [ ] `swarm doctor` health checks
+- [ ] `swarm doctor` health checks (verify `vibe`, `openclaw`, `ollama` binaries)
 - [ ] Config validation (Pydantic)
 - [ ] Logging (NDJSON structured logs per agent)
 - [ ] README + demo GIF
 
 ---
 
-## 12. Key Differences from Overstory
+## 13. Key Differences from Overstory
 
 | Feature | Overstory | PolyglotSwarm |
 |---------|-----------|---------------|
-| Primary runtime | Claude Code | **Any** (Mistral, Hermes, OpenClaw, Claude, Gemini) |
+| Primary runtime | Claude Code | **Any** (Mistral Vibe, Hermes, OpenClaw, Claude, Gemini) |
 | Language | TypeScript/Bun | Python 3.12+ |
 | TUI | Chalk ANSI (basic) | **Textual** (reactive, mouse-aware) |
 | Overseer chat panel | ❌ Not visible in TUI | ✅ First-class panel |
-| Agent spawn mechanism | tmux worktrees | tmux + asyncio subprocess (both) |
+| Agent spawn mechanism | tmux worktrees | asyncio subprocess + optional tmux |
 | Messaging | SQLite mail (typed) | SQLite pub/sub (Pydantic typed) |
-| Mistral Vibe CLI | ❌ | ✅ |
+| Mistral Vibe (`vibe`) | ❌ | ✅ (`-p` programmatic + streaming NDJSON) |
 | Hermes (Ollama) | ❌ | ✅ |
-| OpenClaw | ❌ | ✅ |
+| OpenClaw | ❌ | ✅ (profile-isolated, ACP gateway) |
 | License compatibility | MIT (can reference) | MIT (new project) |
 
 ---
 
-## 13. Risks & Mitigations
+## 14. Risks & Mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Mistral Vibe CLI may lack headless/non-interactive mode | Wrap in tmux pane; send input via `tmux send-keys` instead |
-| Hermes models via Ollama may be slower — agent stalls look like crashes | Tune `stall_timeout_seconds` per runtime in config |
-| OpenClaw API/CLI surface unknown | Abstract via `AgentRuntime`; stub adapter first, fill in details |
-| Overseer LLM context gets huge with many agents | Summarize agent status before injecting into overseer context; keep fleet updates compact |
-| Merge conflicts between agent worktrees | Borrow Overstory's 4-tier conflict resolution approach; FIFO merge queue |
+| `vibe -p` exits after `--max-turns` — multi-turn agents need session resume | Store vibe SESSION_ID after first run; use `--resume SESSION_ID` for nudges |
+| `vibe --output streaming` NDJSON schema may change between versions | Pin vibe version in pyproject.toml; version-check on startup |
+| OpenClaw gateway port collisions when running many agent profiles | Use `--profile` to isolate; each profile shifts derived ports automatically |
+| OpenClaw `agent` is single-turn by design — may not suit long-running tasks | Use `openclaw acp` for multi-turn ACP-based agents; investigate `openclaw agents` workspaces |
+| Hermes models via Ollama may be slower — stalls look like crashes | Tune `stall_timeout_seconds` per runtime in config |
+| Overseer LLM context grows large with many agents | Summarize agent status before injecting into overseer context |
+| Merge conflicts between agent worktrees | FIFO merge queue; borrow 4-tier conflict resolution pattern from Overstory |
 
 ---
 
-## 14. References
+## 15. References
 
 - [Overstory GitHub](https://github.com/jayminwest/overstory) — inspiration and architectural reference
 - [Textual Docs](https://textual.textualize.io/) — TUI framework
@@ -403,4 +612,6 @@ worktree:
 - [aiosqlite](https://github.com/omnilib/aiosqlite) — async SQLite
 - [libtmux](https://libtmux.git-pull.com/) — programmatic tmux control
 - [Pydantic v2](https://docs.pydantic.dev/) — config and message schema validation
-- [Overstory STEELMAN.md](https://github.com/jayminwest/overstory/blob/main/STEELMAN.md) — risk analysis for multi-agent systems (read before going to production)
+- [Overstory STEELMAN.md](https://github.com/jayminwest/overstory/blob/main/STEELMAN.md) — risk analysis for multi-agent systems
+- `vibe --help` — confirmed programmatic mode via `-p`, streaming NDJSON output, `--resume` for session continuation
+- `openclaw --help` — confirmed profile isolation, `agent` single-turn command, ACP tools, gateway management
