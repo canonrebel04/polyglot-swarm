@@ -6,6 +6,48 @@
 
 ---
 
+## Implementation Progress
+
+> Last updated: 2026-03-19
+
+### Overall Status: Foundation Complete — Moving to TUI + Runtime Adapters
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Core Architecture | ✅ 100% | Runtime system, role system, messaging, worktree all operational |
+| Agent Roles | 🔄 70% | Scout, Builder, Developer, Tester complete. Reviewer, Merger, Monitor, Lead, Supervisor, Coordinator, Orchestrator pending |
+| Runtime Adapters | 🔄 10% | Echo runtime complete. 11 Tier-1/2 adapters pending |
+| Orchestrator | 🔄 70% | Coordinator, AgentManager, Watchdog, workflow management done. Overseer loop, merge manager pending |
+| CLI Commands | ✅ 90% | `init`, `run`, `status`, `stop`, `doctor`, `cleanup`, `roles`, `runtimes` working |
+| TUI | ⬜ 0% | Not started. Next major phase |
+| Tests | ✅ 100% | 46 tests passing in 1.58s |
+
+### Completed Items
+
+- `AgentRuntime` base interface
+- Role registry + YAML contracts + permission system
+- SQLite messaging database
+- Git worktree manager
+- Fleet status model
+- Coordinator (task decomposition + assignment)
+- AgentManager (spawn/monitor/message/kill)
+- Watchdog (stall detection)
+- Workflow management (scout → developer → tester pipeline)
+- Echo runtime (testing stub)
+- All core CLI commands
+- 46-test suite with unit + integration + e2e coverage
+
+### Active Next Steps (Priority Order)
+
+1. **TUI** — Textual split-pane overseer chat + fleet status + agent output panels
+2. **Runtime Adapters** — Claude Code, Codex CLI, Gemini CLI, Aider, OpenHands, OpenCode, Vibe, Hermes
+3. **Remaining Roles** — Reviewer, Merger, Monitor, Lead, Supervisor, Orchestrator
+4. **Role Safety** — Tool policy enforcement, filesystem policy, drift detection, structured output validation
+5. **Overseer Loop** — Task decomposition via LLM, auto-nudge, dynamic agent dispatch
+6. **Merge Manager** — FIFO merge queue, conflict resolution tiers
+
+---
+
 ## 1. Problem Statement
 
 Overstory is one of the strongest references for multi-agent orchestration, but its implementation and defaults are still centered around its own supported runtime stack and workflow assumptions.
@@ -37,42 +79,28 @@ A **terminal-first multi-agent orchestration system** where:
 
 ## 3. Build vs Fork Decision
 
-### Option A — Fork Overstory
+**Decision: Built from Scratch ✅** — This decision is finalized. The foundation is complete.
 
-| Pros | Cons |
-|------|------|
-| Mature architecture ideas already proven | Deeply tied to its own runtime assumptions and project structure |
-| Good reference for role hierarchy, watchdogs, worktrees, and merge flow | Untangling runtime-specific behavior will cost time |
-| Strong orchestration concepts | Harder to redesign around a new UI and broader runtime support |
-| Existing multi-agent patterns are useful to study | You inherit design decisions you may not want long-term |
-
-### Option B — Build from Scratch ✅ (Recommended)
-
-| Pros | Cons |
-|------|------|
-| Full control over runtime adapters from day one | More initial implementation work |
-| Can design the TUI around overseer + fleet visibility | Must build core orchestration pieces yourself |
-| Can make role enforcement a first-class concept | Need to define your own contracts, guards, and state model |
-| Easier to support many agent CLIs consistently | Less out-of-the-box behavior |
-
-**Verdict:** Build from scratch, but borrow Overstory’s best ideas: role-based agents, worktree isolation, coordinator hierarchy, mail/state tracking, merge stages, and watchdog health checks.
+The build-from-scratch approach was correct. The role system, adapter interface, and orchestration logic are all cleanly designed without inherited coupling from Overstory's TypeScript/Bun stack or Claude-specific hooks. Overstory's role hierarchy, worktree isolation, coordinator pattern, and watchdog ideas were used as reference only.
 
 ---
 
-## 4. Recommended Tech Stack
+## 4. Tech Stack
 
-| Layer | Recommendation | Reason |
-|-------|---------------|--------|
-| **Language** | Python 3.12+ | Fast iteration, great subprocess support, good async ecosystem |
-| **TUI Framework** | [Textual](https://github.com/Textualize/textual) | Best fit for live split-pane orchestration UI |
-| **CLI Entry Point** | [Typer](https://typer.tiangolo.com/) | Clean command structure, easy UX |
-| **Process Management** | `asyncio` + `asyncio.subprocess` | Non-blocking runtime control |
-| **Optional Session Control** | `tmux` via `libtmux` | Useful for agents that need pseudo-interactive control |
-| **Messaging / State** | SQLite (WAL mode) via `aiosqlite` | Durable, simple, fast local coordination state |
-| **Validation / Config** | Pydantic + YAML | Structured configs and role contracts |
-| **Worktree Isolation** | `git worktree` | One agent per branch/worktree |
-| **Logs / Events** | NDJSON | Easy streaming and replay |
-| **Policy Engine** | Internal rules layer | Needed for role locking, tool filtering, and access boundaries |
+| Layer | Choice | Status |
+|-------|--------|--------|
+| **Language** | Python 3.12+ | ✅ In use |
+| **TUI Framework** | [Textual](https://github.com/Textualize/textual) | ⬜ Next phase |
+| **CLI Entry Point** | [Typer](https://typer.tiangolo.com/) | ✅ In use |
+| **Process Management** | `asyncio` + `asyncio.subprocess` | ✅ In use |
+| **Optional Session Control** | `tmux` via `libtmux` | 🔄 Planned |
+| **Messaging / State** | SQLite (WAL mode) via `aiosqlite` | ✅ In use |
+| **Validation / Config** | Pydantic + YAML | ✅ In use |
+| **Worktree Isolation** | `git worktree` | ✅ In use |
+| **Logs / Events** | NDJSON | 🔄 Planned |
+| **Policy Engine** | Internal rules layer | 🔄 Phase 4 |
+
+> **SpacetimeDB note:** Evaluated and not adopted for v1. SQLite WAL is the right fit for local single-machine coordination. SpacetimeDB's Python SDK is unmaintained (2023) and the tool is designed for multi-client networked state, not local orchestration. Revisit if PolyglotSwarm ever becomes multi-node.
 
 ---
 
@@ -106,16 +134,17 @@ polyglot-swarm/
     cli/
       app.py
       commands/
-        init.py
-        run.py
-        status.py
+        init.py          ✅
+        run.py           ✅
+        status.py        ✅
         inspect.py
         nudge.py
-        stop.py
-        doctor.py
-        roles.py
-        runtimes.py
-    tui/
+        stop.py          ✅
+        doctor.py        ✅
+        roles.py         ✅
+        runtimes.py      ✅
+        cleanup.py       ✅
+    tui/                 ⬜ next phase
       app.py
       panels/
         overseer_chat.py
@@ -124,58 +153,59 @@ polyglot-swarm/
         event_log.py
         role_view.py
     orchestrator/
-      overseer.py
-      coordinator.py
+      overseer.py        🔄 partial
+      coordinator.py     ✅
       dispatcher.py
-      agent_manager.py
-      watchdog.py
-      merge_manager.py
+      agent_manager.py   ✅
+      watchdog.py        ✅
+      merge_manager.py   ⬜
       completion.py
     runtimes/
-      base.py
-      claude_code.py
-      codex.py
-      gemini_cli.py
-      aider.py
-      openhands.py
-      opencode.py
-      goose.py
-      cline.py
-      qodo.py
-      mistral_vibe.py
-      hermes.py
-      openclaw.py
-      registry.py
-      capabilities.py
+      base.py            ✅
+      echo.py            ✅  (testing stub)
+      claude_code.py     ⬜
+      codex.py           ⬜
+      gemini_cli.py      ⬜
+      aider.py           ⬜
+      openhands.py       ⬜
+      opencode.py        ⬜
+      goose.py           ⬜
+      cline.py           ⬜
+      qodo.py            ⬜
+      mistral_vibe.py    ⬜
+      hermes.py          ⬜
+      openclaw.py        ⬜
+      registry.py        ✅
+      capabilities.py    ✅
     roles/
-      registry.py
-      contracts.py
-      guards.py
-      prompts.py
-      policies.py
+      registry.py        ✅
+      contracts.py       ✅
+      guards.py          ⬜  phase 4
+      prompts.py         ✅
+      policies.py        ⬜  phase 4
     messaging/
-      db.py
-      protocol.py
-      bus.py
+      db.py              ✅
+      protocol.py        ✅
+      bus.py             ✅
       events.py
     worktree/
-      manager.py
+      manager.py         ✅
     logging/
       logger.py
       replay.py
     agents/
       definitions/
-        orchestrator.md
-        coordinator.md
-        supervisor.md
-        lead.md
-        scout.md
-        developer.md
-        builder.md
-        tester.md
-        reviewer.md
-        merger.md
-        monitor.md
+        orchestrator.md   ⬜
+        coordinator.md    ✅
+        supervisor.md     ⬜
+        lead.md           ⬜
+        scout.md          ✅
+        developer.md      ✅
+        builder.md        ✅
+        tester.md         ✅
+        reviewer.md       ⬜
+        merger.md         ⬜
+        monitor.md        ⬜
   config.yaml
   pyproject.toml
   README.md
@@ -186,31 +216,31 @@ polyglot-swarm/
 
 ## 6. Supported Runtime Strategy
 
-PolyglotSwarm should support runtimes in **tiers**, not claim identical parity for every tool on day one.
+PolyglotSwarm supports runtimes in **tiers**.
 
 ### Tier 1 — Must Support in v1
 
-| Runtime | Why it matters | Mode |
-|--------|----------------|------|
-| **Claude Code** | One of the leading coding agents | Interactive + task |
-| **Codex CLI** | Core target runtime | Interactive + task |
-| **Gemini CLI** | Core target runtime | Interactive + task |
-| **Aider** | Popular terminal-native coding tool with repo awareness | Task-first |
-| **OpenHands CLI** | Strong agentic coding workflow and headless fit | Task-first |
-| **OpenCode** | Built as a terminal coding agent with agent concepts | Interactive + task |
-| **Mistral Vibe (`vibe`)** | Important for Mistral-based workflows | Task-first / resumable |
-| **Hermes (Ollama / llama.cpp)** | Local/private model support | Task-first |
+| Runtime | Why it matters | Mode | Status |
+|--------|----------------|------|--------|
+| **Claude Code** | One of the leading coding agents | Interactive + task | ⬜ |
+| **Codex CLI** | Core target runtime | Interactive + task | ⬜ |
+| **Gemini CLI** | Core target runtime | Interactive + task | ⬜ |
+| **Aider** | Popular terminal-native coding tool with repo awareness | Task-first | ⬜ |
+| **OpenHands CLI** | Strong agentic coding workflow and headless fit | Task-first | ⬜ |
+| **OpenCode** | Built as a terminal coding agent with agent concepts | Interactive + task | ⬜ |
+| **Mistral Vibe (`vibe`)** | Important for Mistral-based workflows | Task-first / resumable | ⬜ |
+| **Hermes (Ollama / llama.cpp)** | Local/private model support | Task-first | ⬜ |
 
 ### Tier 2 — High-Value After v1
 
-| Runtime | Why it matters | Mode |
-|--------|----------------|------|
-| **Goose** | Strong CLI agent story and tool integrations | Task-first |
-| **Cline CLI** | Terminal-native coding agent, promising for orchestration | Interactive + task |
-| **Qodo Gen CLI** | Agent framework orientation and CI angle | Task-first |
-| **OpenClaw** | Interesting agent/gateway system, but not primarily a coding CLI | Task-first |
+| Runtime | Why it matters | Mode | Status |
+|--------|----------------|------|--------|
+| **Goose** | Strong CLI agent story and tool integrations | Task-first | ⬜ |
+| **Cline CLI** | Terminal-native coding agent, promising for orchestration | Interactive + task | ⬜ |
+| **Qodo Gen CLI** | Agent framework orientation and CI angle | Task-first | ⬜ |
+| **OpenClaw** | Interesting agent/gateway system, not primarily a coding CLI | Task-first | ⬜ |
 
-### Tier 3 — Nice-to-Have / Experimental
+### Tier 3 — Experimental
 
 - Cursor CLI
 - Copilot CLI-style interfaces
@@ -227,9 +257,9 @@ PolyglotSwarm should support runtimes in **tiers**, not claim identical parity f
 
 ---
 
-## 7. AgentRuntime Interface (Best Practice)
+## 7. AgentRuntime Interface
 
-The most important architectural decision is the **runtime adapter interface**. Design this first.
+Designed and implemented. ✅
 
 ```python
 # src/runtimes/base.py
@@ -276,60 +306,52 @@ class RuntimeCapabilities:
 class AgentRuntime(ABC):
     @property
     @abstractmethod
-    def runtime_name(self) -> str:
-        ...
+    def runtime_name(self) -> str: ...
 
     @property
     @abstractmethod
-    def capabilities(self) -> RuntimeCapabilities:
-        ...
+    def capabilities(self) -> RuntimeCapabilities: ...
 
     @abstractmethod
-    async def spawn(self, config: AgentConfig) -> str:
-        ...
+    async def spawn(self, config: AgentConfig) -> str: ...
 
     @abstractmethod
-    async def send_message(self, session_id: str, message: str) -> None:
-        ...
+    async def send_message(self, session_id: str, message: str) -> None: ...
 
     @abstractmethod
-    async def get_status(self, session_id: str) -> AgentStatus:
-        ...
+    async def get_status(self, session_id: str) -> AgentStatus: ...
 
     @abstractmethod
-    async def stream_output(self, session_id: str) -> AsyncIterator[str]:
-        ...
+    async def stream_output(self, session_id: str) -> AsyncIterator[str]: ...
 
     @abstractmethod
-    async def kill(self, session_id: str) -> None:
-        ...
+    async def kill(self, session_id: str) -> None: ...
 ```
 
 ---
 
 ## 8. Agent Role System
 
-This project needs an **explicit role system**, not just “different prompts.” A role is a contract with identity, permissions, expected outputs, and forbidden behaviors.
+Role registry and contracts are complete. ✅  
+Remaining roles (Reviewer, Merger, Monitor, Lead, Supervisor, Orchestrator) are next.
 
-### Base Role Set
+### Full Role Set
 
-This keeps the Overstory-style hierarchy while adding the two roles you explicitly want: **developer** and **tester**.
+| Role | Purpose | Access | Can Spawn? | Status |
+|------|---------|--------|------------|--------|
+| **Orchestrator** | Multi-project meta-coordinator | Read-only | Yes | ⬜ |
+| **Coordinator** | Break goals into work, assign agents | Read-only | Yes | ✅ |
+| **Supervisor** | Fleet oversight, escalation handling | Read-only | Limited | ⬜ |
+| **Lead** | Team-level coordinator for a workstream | Read-mostly | Yes | ⬜ |
+| **Scout** | Explore code, read docs, gather facts | Read-only | No | ✅ |
+| **Developer** | Complex implementation, reasoning-intensive | Read-write | No | ✅ |
+| **Builder** | Fast execution-oriented code editing | Read-write | No | ✅ |
+| **Tester** | Run/write tests, validate behavior, repro bugs | Read-write (tests) | No | ✅ |
+| **Reviewer** | Review code, detect issues, reject bad outputs | Read-only | No | ⬜ |
+| **Merger** | Merge approved work, resolve safe conflicts | Read-write | No | ⬜ |
+| **Monitor** | Detect stalls, failures, drift, unhealthy sessions | Read-only | No | ⬜ |
 
-| Role | Purpose | Access | Can Spawn? |
-|------|---------|--------|------------|
-| **Orchestrator** | Multi-project or meta-coordinator | Read-only | Yes |
-| **Coordinator** | Break goals into work, assign agents, track progress | Read-only | Yes |
-| **Supervisor** | Fleet oversight, escalation handling, intervention | Read-only | Limited |
-| **Lead** | Team-level coordinator for a workstream | Read-mostly | Yes |
-| **Scout** | Explore code, read docs, inspect architecture, gather facts | Read-only | No |
-| **Developer** | Implement scoped code changes with higher reasoning focus | Read-write | No |
-| **Builder** | Fast execution-oriented code editing and implementation | Read-write | No |
-| **Tester** | Run tests, add tests, validate behavior, reproduce bugs | Read-write (tests only preferred) | No |
-| **Reviewer** | Review code, detect issues, reject bad outputs | Read-only | No |
-| **Merger** | Merge approved work, resolve safe conflicts, finalize branch state | Read-write | No |
-| **Monitor** | Detect stalls, failures, drift, and unhealthy sessions | Read-only | No |
-
-### Role Relationships
+### Role Hierarchy
 
 ```text
 Orchestrator
@@ -347,29 +369,19 @@ Orchestrator
 
 ### Why Both Developer and Builder?
 
-Use both, but differentiate them.
-
 | Role | Best Use |
 |------|----------|
 | **Developer** | Complex implementation requiring planning, reasoning, architecture-sensitive edits |
 | **Builder** | Faster execution on bounded code tasks, refactors, small feature slices |
 | **Tester** | Verification, regression checks, test writing, repro scripts |
 
-That gives you cleaner delegation:
-- Scout finds facts.
-- Lead decomposes.
-- Developer handles complex implementation.
-- Builder handles straightforward edit-heavy work.
-- Tester validates.
-- Reviewer critiques.
-- Merger lands changes.
-- Monitor watches fleet health.
-
 ---
 
 ## 9. Role Locking and Anti-Drift
 
-This is a core design requirement: **the main AI must not be able to deploy a role and then let it drift into another job silently**.
+**Status: Architecture defined. Guards and policies implementation is Phase 4.**
+
+Role contracts are designed and loaded. Full enforcement (tool policy, filesystem policy, output validation, drift detection) is the next major safety milestone.
 
 ### Best Practice: Role = Prompt + Policy + Access + Validation
 
@@ -412,76 +424,37 @@ handoff_to:
   - reviewer
 ```
 
-### Enforcement Layers
+### Enforcement Layers (Phase 4)
 
-#### 1. Prompt-Level Role Anchoring
-Every role prompt should repeat:
-- who the agent is,
-- what it is allowed to do,
-- what it must not do,
-- who it hands off to.
-
-#### 2. Runtime-Level Tool Restrictions
-Examples:
-- Scout cannot use edit tools.
-- Reviewer cannot write code.
-- Merger cannot invent new implementation tasks.
-- Monitor cannot modify product code.
-- Lead can delegate but not directly implement except in explicitly allowed fallback mode.
-
-#### 3. Filesystem Policy
-Examples:
-- Scout and Reviewer mount repo read-only where possible.
-- Tester may write only in test directories, logs, repro scripts, or explicitly allowed temp paths.
-- Merger can touch merge metadata and target branch state.
-- Developer and Builder get normal task-scoped worktree write access.
-
-#### 4. Task-Type Validation
-The coordinator tags each task with a required role. If a Builder starts producing review language or a Reviewer attempts edits, the watchdog flags drift.
-
-#### 5. Output Schema Validation
-Each role returns structured output. Example:
-- Scout returns findings and cited evidence.
-- Builder returns changed files and implementation notes.
-- Tester returns commands run, pass/fail, and repro info.
-- Reviewer returns verdict and concerns.
-- Merger returns merge result and conflict summary.
-
-#### 6. Drift Detection
-Monitor or Supervisor checks for:
-- wrong tool usage,
-- forbidden file writes,
-- self-reassignment language,
-- role-inconsistent outputs,
-- unexpected child spawning,
-- repeated instruction override attempts.
+1. **Prompt-Level Role Anchoring** — identity, permissions, forbidden actions, handoff targets embedded in every role prompt
+2. **Runtime-Level Tool Restrictions** — tool allowlists enforced via runtime adapter where supported
+3. **Filesystem Policy** — read-only mounts for Scout/Reviewer; test-scoped writes for Tester; full worktree access for Developer/Builder
+4. **Task-Type Validation** — coordinator tags every task with the required role; mismatches are rejected
+5. **Output Schema Validation** — each role returns structured output that is validated before handoff
+6. **Drift Detection** — Monitor/Supervisor scan for wrong tool usage, forbidden writes, self-reassignment language, unexpected spawns
 
 ### Hard Rule
 
 **Agents never self-upgrade roles.**  
-If a Scout decides code must be changed, it requests a Builder or Developer.  
-If a Builder thinks review is needed, it hands off to Reviewer.  
-If a Reviewer finds implementation gaps, it sends work back instead of fixing them directly.
+Scout requests a Builder if code must change. Builder hands off to Reviewer when done. Reviewer sends work back if it finds gaps instead of fixing them directly.
 
 ---
 
 ## 10. Agent Definitions
 
-Each role gets its own definition file.
-
 ```text
 src/agents/definitions/
-  orchestrator.md
-  coordinator.md
-  supervisor.md
-  lead.md
-  scout.md
-  developer.md
-  builder.md
-  tester.md
-  reviewer.md
-  merger.md
-  monitor.md
+  coordinator.md    ✅
+  scout.md          ✅
+  developer.md      ✅
+  builder.md        ✅
+  tester.md         ✅
+  orchestrator.md   ⬜
+  supervisor.md     ⬜
+  lead.md           ⬜
+  reviewer.md       ⬜
+  merger.md         ⬜
+  monitor.md        ⬜
 ```
 
 ### Definition Template
@@ -521,7 +494,7 @@ Send work to Tester or Reviewer when implementation is complete.
 
 ## 11. Overseer and Delegation Rules
 
-The Overseer should not dispatch arbitrary prompts. It should dispatch **typed tasks**.
+**Status: Coordinator working. Full Overseer LLM loop is next.**
 
 ### Task Packet
 
@@ -542,7 +515,7 @@ class TaskPacket:
 ### Delegation Rules
 
 - **Scout** first when facts are missing.
-- **Lead** when one issue likely needs multiple workers.
+- **Lead** when one issue needs multiple workers.
 - **Developer** for architecture-sensitive or multi-file changes.
 - **Builder** for bounded implementation tasks.
 - **Tester** after implementation or for bug reproduction.
@@ -550,7 +523,7 @@ class TaskPacket:
 - **Merger** only after approval conditions are met.
 - **Monitor** runs continuously or on interval.
 
-### Example Flow
+### Default Workflow
 
 ```text
 User request
@@ -562,29 +535,30 @@ User request
           -> Tester (run validations)
           -> Reviewer (judge quality)
       -> Merger
-      -> Monitor keeps watching all sessions
+      -> Monitor (watching continuously)
 ```
 
 ---
 
-## 12. Runtime Adapters Overview
+## 12. Runtime Adapters
 
-### Runtime Matrix
+### Runtime Capability Matrix
 
-| Runtime | Category | Notes |
-|--------|----------|------|
-| **Claude Code** | Premium coding agent | First-class support target |
-| **Codex CLI** | Premium coding agent | First-class support target |
-| **Gemini CLI** | Premium coding agent | First-class support target |
-| **Aider** | Terminal coding tool | Great repo-aware implementation agent |
-| **OpenHands CLI** | Autonomous coding agent | Strong headless/task workflow |
-| **OpenCode** | Terminal coding agent | Good fit for open agent architecture |
-| **Goose** | Open-source CLI agent | Strong tool-oriented flow |
-| **Cline CLI** | Terminal coding agent | Good candidate for role-based orchestration |
-| **Qodo Gen CLI** | Agent framework CLI | Good for CI and structured tasks |
-| **Mistral Vibe (`vibe`)** | Programmatic CLI | Strong Mistral support |
-| **Hermes via Ollama / llama.cpp** | Local model runtime | Privacy-friendly local support |
-| **OpenClaw** | Agent gateway platform | Experimental coding fit |
+| Runtime | Category | Support Level | Status |
+|--------|----------|:---:|--------|
+| **Claude Code** | Premium coding agent | 3 | ⬜ |
+| **Codex CLI** | Premium coding agent | 3 | ⬜ |
+| **Gemini CLI** | Premium coding agent | 3 | ⬜ |
+| **Aider** | Terminal coding tool | 3 | ⬜ |
+| **OpenHands CLI** | Autonomous coding agent | 2 | ⬜ |
+| **OpenCode** | Terminal coding agent | 2 | ⬜ |
+| **Mistral Vibe (`vibe`)** | Programmatic CLI | 2 | ⬜ |
+| **Hermes (Ollama)** | Local model runtime | 1 | ⬜ |
+| **Goose** | Open-source CLI agent | 2 | ⬜ |
+| **Cline CLI** | Terminal coding agent | 2 | ⬜ |
+| **Qodo Gen CLI** | Agent framework CLI | 2 | ⬜ |
+| **OpenClaw** | Agent gateway platform | 1 | ⬜ |
+| **Echo** | Internal test runtime | — | ✅ |
 
 ### Core Adapter Requirement
 
@@ -594,49 +568,52 @@ Every adapter must implement:
 - stream output
 - capture structured completion
 - detect stall/error
-- send follow-up or resume message when supported
-- expose runtime capabilities
+- send follow-up or resume when supported
+- expose `RuntimeCapabilities`
 - respect role/tool restrictions as much as the runtime allows
 
 ---
 
-## 13. Mistral Vibe Notes
+## 13. Mistral Vibe (`vibe`) Notes
 
-`vibe` already exposes a useful programmatic mode with `-p`, output formats including `streaming`, tool filtering via `--enabled-tools`, agent profiles via `--agent`, workdir switching via `--workdir`, and resume support via `--resume`.
+**Confirmed flags from `vibe --help`:**
 
-### Recommended Use
-- Use `-p` for headless runs.
-- Use `--output streaming` for live event feed.
-- Use `--enabled-tools` to align runtime behavior with role policy.
-- Use `--resume` for nudges or follow-up turns.
+| Flag | Purpose |
+|------|--------|
+| `-p TEXT` | Programmatic headless mode — auto-approves tools, outputs and exits |
+| `--max-turns N` | Limit assistant turns |
+| `--max-price DOLLARS` | Cost cap |
+| `--enabled-tools TOOL` | Tool allowlist (disables all others in `-p` mode) |
+| `--output streaming` | NDJSON per message — best for live TUI streaming |
+| `--agent NAME` | Use builtin or custom agent profile (`auto-approve` recommended) |
+| `--workdir DIR` | Run from this directory |
+| `--resume SESSION_ID` | Resume prior session for nudge/continuation |
 
-### Good Role Fits
-- Scout
-- Builder
-- Developer
-- Reviewer (if tool-restricted)
-- Tester
+**Best practices:**
+- Use `-p` + `--output streaming` for headless agent runs
+- Use `--enabled-tools` to align with role tool policy
+- Capture vibe SESSION_ID from first run; use `--resume` for nudges
+- Good role fits: Scout, Builder, Developer, Tester, Reviewer (tool-restricted)
 
 ---
 
 ## 14. OpenClaw Notes
 
-OpenClaw is interesting, but it is not primarily a coding-agent CLI. Treat it as an **experimental adapter**.
+**Confirmed flags from `openclaw --help`:**
 
-### Recommended Use
-- Profile-isolated agents via `--profile`
-- Gateway-backed sessions
-- ACP exploration for richer control
+OpenClaw is a WhatsApp/Telegram gateway with a built-in agent system. It is **not** a general-purpose coding agent CLI. Treat as an experimental runtime.
 
-### Good Role Fits
-- Monitor
-- Supervisor
-- Experimental task agents
-- Notification / external workflow bridges
+**Key commands:** `openclaw agent` (single turn), `openclaw acp` (Agent Control Protocol), `openclaw agents` (isolated workspaces), `--profile <name>` (per-agent isolation).
+
+**Multi-agent strategy:** Each sub-agent maps to an isolated `--profile swarm-<name>` with its own gateway instance.
+
+**Good role fits:** Monitor, Supervisor, notification bridges, experimental task routing.
 
 ---
 
-## 15. TUI Layout Best Practices
+## 15. TUI Layout
+
+**Status: ⬜ Not started. This is the next major phase.**
 
 ```python
 # src/tui/app.py
@@ -665,15 +642,15 @@ class PolyglotSwarmApp(App):
         yield Footer()
 ```
 
-### Required TUI Views
+### Required TUI Panels
 
-- Overseer conversation
-- Fleet status table
-- Current task per agent
-- Runtime per agent
+- Overseer conversation (live LLM chat)
+- Fleet status table (name, role, state, runtime, task)
 - Selected agent live output
-- Role contract summary
-- Alerts for stall, drift, forbidden action, completion, and merge readiness
+- Event log
+- Role contract viewer
+- Drift / stall / forbidden action alerts
+- Nudge / retry / kill actions via keyboard shortcuts
 
 ---
 
@@ -767,25 +744,30 @@ worktree:
 
 ## 17. Milestone Roadmap
 
-### Phase 1 — Foundation
-- [ ] Project scaffolding
-- [ ] `AgentRuntime` base interface
-- [ ] role registry + role contracts
-- [ ] SQLite event/message bus
-- [ ] git worktree manager
-- [ ] fleet status model
+### Phase 1 — Foundation ✅ Complete
+- [x] Project scaffolding
+- [x] `AgentRuntime` base interface
+- [x] Role registry + role contracts
+- [x] SQLite event/message bus
+- [x] Git worktree manager
+- [x] Fleet status model
+- [x] Echo runtime (test stub)
+- [x] 46 tests passing
 
-### Phase 2 — Core Roles
-- [ ] coordinator
-- [ ] scout
-- [ ] builder
-- [ ] developer
-- [ ] tester
+### Phase 2 — Core Roles 🔄 70% Complete
+- [x] coordinator
+- [x] scout
+- [x] builder
+- [x] developer
+- [x] tester
 - [ ] reviewer
 - [ ] merger
 - [ ] monitor
+- [ ] lead
+- [ ] supervisor
+- [ ] orchestrator
 
-### Phase 3 — Runtime Adapters v1
+### Phase 3 — Runtime Adapters v1 ⬜ Not Started
 - [ ] Claude Code adapter
 - [ ] Codex CLI adapter
 - [ ] Gemini CLI adapter
@@ -795,36 +777,41 @@ worktree:
 - [ ] Vibe adapter
 - [ ] Hermes adapter
 
-### Phase 4 — Role Safety
-- [ ] role contracts
-- [ ] tool policy enforcement
-- [ ] filesystem policy enforcement
-- [ ] structured output validation
-- [ ] drift detection
-- [ ] supervisor escalation flow
+### Phase 4 — Role Safety ⬜ Not Started
+- [ ] Tool policy enforcement (`guards.py`)
+- [ ] Filesystem policy enforcement (`policies.py`)
+- [ ] Structured output validation per role
+- [ ] Drift detection
+- [ ] Supervisor escalation flow
 
-### Phase 5 — TUI
-- [ ] overseer chat panel
-- [ ] fleet panel
-- [ ] selected agent output
-- [ ] event log
-- [ ] role contract viewer
-- [ ] drift/stall warnings
-- [ ] nudge / retry / kill actions
+### Phase 5 — TUI ⬜ Not Started
+- [ ] Textual app skeleton
+- [ ] Overseer chat panel
+- [ ] Fleet panel
+- [ ] Selected agent output panel
+- [ ] Event log panel
+- [ ] Role contract viewer
+- [ ] Drift/stall warnings
+- [ ] Nudge / retry / kill actions
 
-### Phase 6 — Extended Adapters
+### Phase 6 — Overseer LLM Loop ⬜ Not Started
+- [ ] LLM-driven task decomposition
+- [ ] Dynamic runtime selection per sub-task
+- [ ] Auto-nudge generation
+- [ ] Merge conflict resolution (FIFO queue)
+
+### Phase 7 — Extended Adapters ⬜ Not Started
 - [ ] Goose adapter
 - [ ] Cline CLI adapter
 - [ ] Qodo Gen CLI adapter
 - [ ] OpenClaw experimental adapter
 
-### Phase 7 — Polish
-- [ ] `swarm init`
-- [ ] `swarm doctor`
-- [ ] replay logs
-- [ ] merge queue
+### Phase 8 — Polish ⬜ Not Started
+- [ ] `swarm doctor` improvements
+- [ ] Replay logs
+- [ ] Merge queue
 - [ ] README
-- [ ] demo GIF / asciinema
+- [ ] Demo GIF / asciinema
 
 ---
 
@@ -834,12 +821,13 @@ worktree:
 |---------|-----------|---------------|
 | Runtime scope | Focused supported runtime set | Broad coding-agent CLI support |
 | Primary UX | CLI + dashboard | Overseer-first orchestration TUI |
-| Role model | Strong hierarchy | Strong hierarchy plus strict role locking |
-| Developer role | Not central in exposed role list | First-class role |
-| Tester role | Validation/review patterns exist | First-class dedicated role |
+| Role model | Strong hierarchy | Strong hierarchy + strict role locking |
+| Developer role | Not central in exposed role list | First-class role ✅ |
+| Tester role | Validation/review patterns exist | First-class dedicated role ✅ |
 | Runtime adapters | Pluggable | Pluggable with capability matrix |
 | Drift enforcement | Guard-centric | Guard + contract + schema + policy |
-| Goal | Swarm orchestration | Swarm orchestration across popular coding agents |
+| Language | TypeScript/Bun | Python 3.12+ |
+| TUI | Chalk ANSI (basic) | Textual (reactive, mouse-aware) |
 
 ---
 
@@ -847,15 +835,17 @@ worktree:
 
 | Risk | Mitigation |
 |------|------------|
-| Runtime fragmentation across many CLIs | Use capability flags and support levels |
-| Some tools are interactive-first, not orchestration-first | Wrap them with adapter policies and define partial support honestly |
-| Agents drift out of role | Enforce contracts, tool restrictions, structured outputs, and drift detection |
-| Reviewer or Scout starts editing code | Block with runtime/tool/filesystem policy |
+| Runtime fragmentation across many CLIs | Capability flags + support levels |
+| Some tools are interactive-first, not orchestration-first | Adapter policies; define partial support honestly |
+| Agents drift out of role | Contracts, tool restrictions, structured outputs, drift detection |
+| Reviewer or Scout starts editing code | Block with runtime/tool/filesystem policy (Phase 4) |
 | Builder tries to self-review or self-merge | Force handoff chain |
-| Too many adapters delay shipping | Ship Tier 1 first |
-| Overseer context becomes too large | Summarize agent state into compact packets |
-| Merge conflicts multiply with concurrency | Use one worktree per agent and a merge queue |
-| Local-model runtimes act inconsistently | Mark them Level 1 or Level 2 until stabilized |
+| Too many adapters delay shipping | Tier 1 first; Echo runtime enables development in the meantime |
+| Overseer context becomes too large | Summarize agent state into compact packets before injecting |
+| Merge conflicts multiply with concurrency | One worktree per agent + FIFO merge queue |
+| Local-model runtimes act inconsistently | Mark Level 1 until stabilized; tune stall timeout per runtime |
+| vibe `-p` exits after max-turns | Store SESSION_ID; use `--resume` for nudges |
+| OpenClaw gateway port collisions | `--profile` isolates each agent's gateway port automatically |
 
 ---
 
@@ -881,13 +871,7 @@ worktree:
 - [aiosqlite](https://github.com/omnilib/aiosqlite)
 - [libtmux](https://libtmux.git-pull.com/)
 - [Pydantic v2](https://docs.pydantic.dev/)
-- Overstory README / architecture / agent hierarchy
-- Overstory changelog and release notes for role evolution
-- `vibe --help`
-- `openclaw --help`
-- Aider docs
-- OpenHands CLI docs
-- OpenCode docs
-- Goose docs
-- Cline CLI docs
-- Qodo Gen CLI materials
+- `vibe --help` — confirmed `-p`, `streaming`, `--enabled-tools`, `--resume`
+- `openclaw --help` — confirmed `--profile`, `agent`, `acp`, gateway management
+- Aider docs / OpenHands CLI docs / OpenCode docs / Goose docs / Cline CLI docs / Qodo Gen CLI
+- SpacetimeDB evaluated and deferred — Python SDK unmaintained, wrong fit for local single-machine coordination
