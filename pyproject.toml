@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "polyglot-swarm"
+version = "0.1.0"
+description = "Provider-agnostic multi-agent orchestration TUI for coding agents"
+authors = ["Cachy <cachy@mistral.ai>"]
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+textual = "^0.48.0"
+typer = "^0.9.0"
+aiosqlite = "^0.19.0"
+pydantic = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.0"
+isort = "^5.12.0"
+mypy = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

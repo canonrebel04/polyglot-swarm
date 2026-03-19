@@ -1,0 +1,34 @@
+"""
+Runtime registry for managing available agent runtimes.
+"""
+
+from typing import Dict, Type
+from .base import AgentRuntime
+
+
+class RuntimeRegistry:
+    """Registry for managing available agent runtimes."""
+
+    def __init__(self):
+        self._runtimes: Dict[str, Type[AgentRuntime]] = {}
+
+    def register(self, runtime_class: Type[AgentRuntime]) -> None:
+        """Register a new runtime class."""
+        runtime_name = runtime_class().runtime_name
+        self._runtimes[runtime_name] = runtime_class
+
+    def get(self, runtime_name: str) -> Type[AgentRuntime]:
+        """Get a runtime class by name."""
+        return self._runtimes.get(runtime_name)
+
+    def list_available(self) -> list[str]:
+        """List all available runtime names."""
+        return list(self._runtimes.keys())
+
+    def has_runtime(self, runtime_name: str) -> bool:
+        """Check if a runtime is available."""
+        return runtime_name in self._runtimes
+
+
+# Global registry instance
+registry = RuntimeRegistry()
